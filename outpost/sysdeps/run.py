@@ -43,9 +43,7 @@ class SubprocessError(Exception):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
-        super().__init__(
-            f"command failed (exit {returncode}): {' '.join(argv)}\nstderr: {stderr}"
-        )
+        super().__init__(f"command failed (exit {returncode}): {' '.join(argv)}\nstderr: {stderr}")
 
 
 @dataclass(frozen=True)

@@ -58,7 +58,9 @@ def test_clone_propagates_stderr(tmp_path: Path):
 
 def test_fetch_argv():
     fake = FakeRunner()
-    fake.script(["git", "-C", str(REPO), "fetch", "--quiet", "--all"], returns=CompletedProcess(0, "", ""))
+    fake.script(
+        ["git", "-C", str(REPO), "fetch", "--quiet", "--all"], returns=CompletedProcess(0, "", "")
+    )
     git.fetch(fake, REPO)
     assert fake.argvs == [["git", "-C", str(REPO), "fetch", "--quiet", "--all"]]
 
@@ -70,8 +72,13 @@ def test_fetch_argv():
 
 def test_checkout_argv():
     fake = FakeRunner()
-    fake.script(["git", "-C", str(REPO), "rev-parse", "HEAD"], returns=CompletedProcess(0, "other\n", ""))
-    fake.script(["git", "-C", str(REPO), "checkout", "--quiet", "abc123"], returns=CompletedProcess(0, "", ""))
+    fake.script(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], returns=CompletedProcess(0, "other\n", "")
+    )
+    fake.script(
+        ["git", "-C", str(REPO), "checkout", "--quiet", "abc123"],
+        returns=CompletedProcess(0, "", ""),
+    )
     git.checkout(fake, REPO, "abc123")
     assert fake.argvs == [
         ["git", "-C", str(REPO), "rev-parse", "HEAD"],
@@ -81,7 +88,9 @@ def test_checkout_argv():
 
 def test_checkout_noop_when_sha_matches():
     fake = FakeRunner()
-    fake.script(["git", "-C", str(REPO), "rev-parse", "HEAD"], returns=CompletedProcess(0, "abc123\n", ""))
+    fake.script(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], returns=CompletedProcess(0, "abc123\n", "")
+    )
     git.checkout(fake, REPO, "abc123")
     # Only the probe ran; no checkout command was issued.
     assert fake.argvs == [["git", "-C", str(REPO), "rev-parse", "HEAD"]]

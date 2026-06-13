@@ -63,9 +63,7 @@ def unit_state(runner: Runner, unit: str) -> str:
     Matches the ``unit`` field surfaced by the ``status``/``get_service_status``
     commands (``cli-reference.md``).
     """
-    result = runner.run(
-        ["systemctl", "--user", "show", "-p", "ActiveState", "--value", unit]
-    )
+    result = runner.run(["systemctl", "--user", "show", "-p", "ActiveState", "--value", unit])
     return result.stdout.strip()
 
 

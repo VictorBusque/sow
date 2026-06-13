@@ -19,7 +19,5 @@ DEFAULT_LINES: int = 200
 
 def tail(runner: Runner, unit: str, lines: int = DEFAULT_LINES) -> str:
     """Return the last ``lines`` journal lines for ``unit`` (user scope)."""
-    result = runner.run(
-        ["journalctl", "--user", "-u", unit, "-n", str(lines), "--no-pager"]
-    )
+    result = runner.run(["journalctl", "--user", "-u", unit, "-n", str(lines), "--no-pager"])
     return result.stdout

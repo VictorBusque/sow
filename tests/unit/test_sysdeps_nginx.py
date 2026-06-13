@@ -46,7 +46,7 @@ def test_test_propagates_stderr_on_syntax_error():
     fake = FakeRunner()
     fake.script(
         ["nginx", "-t", "-c", str(CONF)],
-        returns=CompletedProcess(1, "", "nginx: [emerg] unknown directive \"foo\""),
+        returns=CompletedProcess(1, "", 'nginx: [emerg] unknown directive "foo"'),
     )
     with pytest.raises(SubprocessError, match=r"\[emerg\] unknown directive"):
         nginx.test(fake, CONF)
@@ -59,7 +59,9 @@ def test_test_propagates_stderr_on_syntax_error():
 
 def test_reload_uses_systemctl_user_reload_outpost_nginx():
     fake = FakeRunner()
-    fake.script(["systemctl", "--user", "reload", "outpost-nginx"], returns=CompletedProcess(0, "", ""))
+    fake.script(
+        ["systemctl", "--user", "reload", "outpost-nginx"], returns=CompletedProcess(0, "", "")
+    )
     nginx.reload(fake)
     assert fake.argvs == [["systemctl", "--user", "reload", "outpost-nginx"]]
 
