@@ -19,6 +19,7 @@ The user need is a single configuration-driven workflow that can define services
 - Provide one declarative source of truth for services, routes, exposure, and runtime policy.
 - Run reliably on systemd Linux (Raspberry Pi, VPS, homelab, desktop) with minimal host assumptions and no container-runtime requirement.
 - Reuse mature infrastructure components rather than rebuilding them: NGINX for ingress and load balancing, systemd for service supervision, and Cloudflare Tunnel or similar for exposure.
+- Own the source-to-runtime lifecycle for git-based services: clone, build, update, and rollback.
 - Offer an ergonomic CLI for operators and a structured MCP surface for coding agents.
 
 ### Technical goals
@@ -49,7 +50,7 @@ The runtime stack is:
 - **NGINX**: reverse proxy, routing, path and host dispatch, load balancing, TLS termination where applicable, rate limiting, and edge-level security controls.
 - **systemd**: service supervision, process lifecycle control, automatic restarts on exit with backoff and rate-limiting, and service-level operational commands via `systemctl`. Structured logs flow to journald.
 - **Tunnel provider**: default public exposure via Cloudflare Tunnel, with a pluggable abstraction for alternatives such as ngrok.
-- **Platform controller**: validation, generation, apply, status, journald integration, health policy, and agent-facing API surface.
+- **Platform controller**: validation, generation, apply, status, journald integration, source/update lifecycle, health policy, and agent-facing API surface.
 
 ## Platform architecture
 
@@ -59,7 +60,7 @@ The source of truth is a platform YAML file describing services, listeners, rout
 
 Representative logical sections include:
 
-- `services`: command, args, cwd, environment (inline `environment` map/list with `${VAR}` interpolation, plus `env_file` references, Docker Compose style), `listen`/replica behavior (see "Listeners and ports"), restart semantics, optional replicas.
+- `services`: command, args, cwd, environment (inline `environment` map/list with `${VAR}` interpolation, plus `env_file` references, Docker Compose style), `listen`/replica behavior (see "Listeners and ports"), optional `source`/`build` (see "Source and updates"), restart semantics, optional replicas.
 - `routes`: a list of virtual-host objects; each vhost has a `host` (or is the default/catch-all vhost) and a `paths` map. See "Route shape".
 - `exposure`: public vs local-only behavior, tunnel provider choice, domains, and exposure rules.
 - `health`: process-level and endpoint-level checks used by the platform controller.
@@ -86,13 +87,16 @@ services:
     health:
       http: { path: /healthz }
 
-  api:                              # three replicas, platform allocates ports
-    command: python -m api
+  api:                              # git-managed; three replicas, platform allocates ports
+    source:
+      git: https://github.com/me/api.git
+      ref: main                     # branch | tag | sha; omit → remote default branch
+    build: pip install -r requirements.txt
+    command: python -m api          # cwd defaults to the managed clone
     replicas: 3                     # listen: omitted → 3 allocated ports, each binds $PORT
-    cwd: ./apps/api
     restart: always
     environment:
-      DATABASE_URL: sqlite:///data/api.db
+      DATABASE_URL: sqlite:///${DATA_DIR}/api.db   # $DATA_DIR persists across updates
     health:
       http: { path: /healthz, timeout: 2s }
 
@@ -140,7 +144,7 @@ This keeps the platform's internals backend-agnostic while targeting NGINX, syst
 
 ### Idempotency and state
 
-Operational artifacts (systemd unit files, NGINX config, tunnel config) are real files — that is what systemd, NGINX, and the tunnel agent read. In addition the controller keeps a small state sidecar as a single JSON file written next to the config (e.g. `.outpost/state.json`), holding only what files cannot cheaply answer: the digest of the last successfully applied spec, a bounded rolling history of recent applies, and per-service last-known status timestamps.
+Operational artifacts (systemd unit files, NGINX config, tunnel config) are real files — that is what systemd, NGINX, and the tunnel agent read. In addition the controller keeps a small state sidecar as a single JSON file written next to the config (e.g. `.outpost/state.json`), holding only what files cannot cheaply answer: the digest of the last successfully applied spec, a bounded rolling history of recent applies, per-service last-known status timestamps, and (for git-managed services) the deployed commit SHA.
 
 - **Idempotent apply**: `outpost apply` compares the desired spec's digest to the stored applied digest. If they match and services are up, the apply is a no-op.
 - **Atomicity**: applies are staged, validated (`nginx -t`), the current set backed up as last-known-good, then swapped and reloaded; on health failure the apply rolls back to that backup. This is not a true cross-system transaction, but a safe swap-and-rollback over a known-good baseline.
@@ -304,11 +308,28 @@ Required commands:
 
 Services receive environment variables in Docker Compose style, supporting both inline values and file references:
 
-- `services.<name>.environment`: an inline map (`KEY: value`) or list (`KEY=value`), with `${VAR}` interpolation resolved from the host environment at generate time. Suited to non-secret configuration.
+- `services.<name>.environment`: an inline map (`KEY: value`) or list (`KEY=value`), with `${VAR}` interpolation resolved at generate time from the host environment plus the platform-injected variables (`PORT`, `ADDRESS`, `DATA_DIR`, `OUTPOST_REPLICA_INDEX`, `OUTPOST_REPLICAS`); platform-injected vars take precedence. Suited to non-secret configuration.
 - `services.<name>.env_file`: one or more paths to env files loaded verbatim. Suited to secrets and larger env sets; the operator owns these files (typically gitignored or decrypted out of band via `age`/`sops`).
 - Precedence matches Compose: inline `environment` overrides `env_file`; later `env_file` entries override earlier ones.
 
 v1 ships no built-in secret store — no encryption at rest, generation, or rotation. The platform reads env sources and passes them through to the service via the generated unit's `Environment=` / `EnvironmentFile=` without interpreting values. Safety constraints: `status` and `logs` never echo environment contents, and `outpost generate` must reference the env source (e.g. via `EnvironmentFile=`) in rendered unit files rather than copying secret values into broadly-readable generated files where avoidable.
+
+### 8. Source and updates
+
+A service becomes **managed** by declaring a `source:` block; `source:` accepts only git. Outpost then owns that service's files and lifecycle end-to-end — clone, build, update, rollback. A service without `source:` is operator-provided: outpost supervises it but never touches its files, and `outpost update` does not apply to it.
+
+Fields:
+
+- `source.git`: the remote URL (HTTPS or SSH).
+- `source.ref`: a branch, tag, or commit SHA to deploy. Omit to track the remote default branch.
+- `source.path`: a subdirectory within the repo, for monorepos (default: repo root).
+- `build`: an optional command run in the clone after every pull, before start (e.g. `make build`, `pip install -r requirements.txt`). Outpost does **not** detect languages or manage toolchains — the host provides them. No `build:` means clone-and-run (scripts or committed/prebuilt artifacts).
+
+The managed clone lives under `.outpost/repos/<service>` (root configurable); outpost owns it and local edits are overwritten on update, by design. Because the clone is ephemeral, the platform guarantees a separate persistent directory per service and injects its path as `DATA_DIR` (default `.outpost/data/<service>`, also available for `${...}` interpolation). All mutable state — databases, uploads, caches — must live under `$DATA_DIR`, which is never touched by updates. This `DATA_DIR` is provided for every service, managed or not.
+
+`outpost update <service> [--ref <ref>]` fetches, checks out the ref (or the remote default branch), runs `build:` if present, then swaps and restarts once the new instance is healthy — the old instance keeps serving throughout. On fetch, build, or health failure the running service is left untouched and the update is reported failed; there is no partial state. The actual deployed SHA is recorded in the state sidecar, and `outpost rollback <service>` checks out the previous SHA and rebuilds.
+
+Private repositories use the operator's existing git/SSH credentials — outpost runs `git` as the operator user; there is no credential manager in v1. Auto-update (polling or webhooks) is deferred to v2: v1 updates are explicit, keeping the control plane synchronous with no background daemon.
 
 ## CLI requirements
 
@@ -324,13 +345,15 @@ The CLI is the primary operator interface and the canonical engine used by highe
 - `outpost start <service>`
 - `outpost stop <service>`
 - `outpost restart <service>`
+- `outpost update <service> [--ref <ref>]`
+- `outpost rollback <service>`
 - `outpost up`
 - `outpost down`
 - `outpost ps`
 - `outpost routes`
 - `outpost exposure`
 
-These commands should map internally to render/apply logic plus `systemctl` operations (`--user` by default) and `journalctl` for logs, alongside tunnel-provider state inspection.
+These commands should map internally to render/apply logic plus `systemctl` operations (`--user` by default), `git` for source updates, and `journalctl` for logs, alongside tunnel-provider state inspection.
 
 ### Apply semantics
 
@@ -357,6 +380,8 @@ The product must expose a structured, minimal MCP server so coding agents can in
 - `start_service`
 - `stop_service`
 - `restart_service`
+- `update_service`
+- `rollback_service`
 - `apply_config`
 - `validate_config`
 - `show_routes`
@@ -395,6 +420,7 @@ The product will be successful in v1 if a technical user can take one declarativ
 - route requests through NGINX,
 - load balance replicas where configured,
 - expose selected endpoints through a tunnel,
+- deploy services from git, and update or roll them back,
 - inspect service health and logs,
 - operate everything through a CLI and MCP surface,
 - and do so without manually authoring raw NGINX config, systemd units, or tunnel configs.
