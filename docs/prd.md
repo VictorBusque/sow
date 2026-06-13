@@ -1,0 +1,398 @@
+# PRD: Portable Edge Micro-Platform CLI
+
+## Overview
+
+This product is a lightweight, portable micro-platform for running and exposing small services across Android/Termux, Raspberry Pi-class Linux devices, and macOS. The platform is designed around three proven components: NGINX for ingress, routing, load balancing, and edge policy; runit for process supervision; and a tunnel provider such as Cloudflare Tunnel for public exposure without direct port forwarding.
+
+The product itself is not a new proxy, init system, or tunnel. It is a thin control plane and CLI that takes a declarative service specification, validates it, generates backend configuration, applies changes safely, and exposes a structured management interface to human operators and coding agents via CLI and MCP.
+
+## Problem
+
+There is a gap between raw self-hosting primitives and a portable, small-footprint platform that works consistently across edge-like environments such as Android/Termux, Raspberry Pi devices, and Macs. Existing solutions either assume a heavier Linux/server substrate, depend on container runtimes that are awkward on Android, or expose too many platform-specific details such as systemd, Docker Compose, or Kubernetes internals.
+
+The user need is a single configuration-driven workflow that can define services, routes, exposure, and lifecycle policy once, then render the appropriate NGINX, runit, and tunnel configuration for the target environment. The resulting system should feel like a tiny portable PaaS for low-traffic personal infrastructure, developer tooling, lightweight APIs, bots, dashboards, and agent-facing services.
+
+## Goals
+
+### Product goals
+
+- Provide one declarative source of truth for services, routes, exposure, and runtime policy.
+- Run reliably on Android/Termux, Raspberry Pi-class Linux systems, and macOS with minimal host assumptions.
+- Reuse mature infrastructure components rather than rebuilding them: NGINX for ingress and load balancing, runit for service supervision, and Cloudflare Tunnel or similar for exposure.
+- Offer an ergonomic CLI for operators and a structured MCP surface for coding agents.
+
+### Technical goals
+
+- Generate deterministic configs for NGINX, runit, and supported tunnel providers from a higher-level platform spec.
+- Support safe validation and apply workflows, including graceful NGINX reloads and service-level lifecycle actions.
+- Keep the spec portable by avoiding backend-native nouns such as `systemd_unit`, `docker_image`, or raw NGINX directives in the source model.
+
+## Non-goals
+
+- Replacing Kubernetes, Nomad, or a full container orchestration platform.
+- Providing a multi-tenant enterprise control plane, billing system, or developer portal.
+- Building a new reverse proxy, new process supervisor, or new public tunnel network.
+- Supporting Windows as a first-class runtime target in v1.
+
+## Target users
+
+The primary users are technical operators and developers who want to run small service stacks on portable or edge-like devices with a consistent workflow. This includes individual engineers, homelab users, self-hosters, AI developers exposing local services, and teams building personal infrastructure tooling or agent endpoints.
+
+The first adopter profile is a highly technical developer who values portability, config-driven infrastructure, lightweight stacks, and the ability to automate operations through a CLI or coding agent integration.
+
+## Core product concept
+
+The platform owns only the orchestration glue. It ingests a declarative YAML file, compiles it into runtime-specific configurations, applies the resulting plan safely, and exposes state and control via CLI and MCP.
+
+The runtime stack is:
+
+- **NGINX**: reverse proxy, routing, path and host dispatch, load balancing, TLS termination where applicable, rate limiting, and edge-level security controls.
+- **runit**: service supervision, process lifecycle control, automatic restarts on exit, and service-level operational commands via `sv`.
+- **Tunnel provider**: default public exposure via Cloudflare Tunnel, with a pluggable abstraction for alternatives such as ngrok.
+- **Platform controller**: validation, generation, apply, status, logging integration, health policy, and agent-facing API surface.
+
+## Platform architecture
+
+### Declarative config
+
+The source of truth is a platform YAML file describing services, listeners, routes, exposure, health semantics, and lifecycle policy. The schema must express logical platform concepts rather than backend-specific implementation details so that the same config can be compiled for multiple environments.
+
+Representative logical sections include:
+
+- `services`: command, args, cwd, environment (inline `environment` map/list with `${VAR}` interpolation, plus `env_file` references, Docker Compose style), `listen`/replica behavior (see "Listeners and ports"), restart semantics, optional replicas.
+- `routes`: a list of virtual-host objects; each vhost has a `host` (or is the default/catch-all vhost) and a `paths` map. See "Route shape".
+- `exposure`: public vs local-only behavior, tunnel provider choice, domains, and exposure rules.
+- `health`: process-level and endpoint-level checks used by the platform controller.
+
+(Platform state — applied config digest, apply history, status snapshots — is tracked separately in a JSON state sidecar, not in the source spec; see "Idempotency and state".)
+
+### Example config
+
+A representative spec exercising the decisions above — pinned and allocated listeners, replicas, Compose-style env, health, a policy, a wildcard vhost, a local-only host, and Cloudflare exposure:
+
+```yaml
+version: 1
+
+services:
+  web:                              # single replica, operator-pinned port
+    command: ./bin/web serve
+    cwd: ./apps/web
+    listen: 127.0.0.1:8080
+    args: ["--addr", "${ADDRESS}"]   # platform injects ADDRESS=127.0.0.1:8080
+    restart: always
+    environment:
+      LOG_LEVEL: info
+    env_file: ./secrets/web.env
+    health:
+      http: { path: /healthz }
+
+  api:                              # three replicas, platform allocates ports
+    command: python -m api
+    replicas: 3                     # listen: omitted → 3 allocated ports, each binds $PORT
+    cwd: ./apps/api
+    restart: always
+    environment:
+      DATABASE_URL: sqlite:///data/api.db
+    health:
+      http: { path: /healthz, timeout: 2s }
+
+routes:
+  - host: app.example.com           # public vhost
+    paths:
+      /api:
+        to: api                     # targets a 3-replica service → NGINX upstream auto-built
+        policy:
+          rate_limit: { rps: 100, burst: 50 }
+          request_headers:
+            add: { X-Forwarded-By: outpost }
+          auth:
+            basic: ./secrets/users.htpasswd
+      /:
+        to: web
+  - host: "*.example.com"           # wildcard vhost
+    paths:
+      /: { to: web }
+  - host: admin.local               # local/LAN only: in routes, absent from exposure
+    paths:
+      /: { to: web }
+
+exposure:
+  cloudflare:
+    credentials_file: ~/.cloudflared/app.json
+    hosts: [app.example.com]        # only this vhost is public via the tunnel
+```
+
+The `/api` route targets a 3-replica service, so the platform builds an NGINX upstream across all three allocated ports; load balancing is native NGINX. `admin.local` has a route but is absent from `exposure.hosts`, so NGINX serves it locally only and the tunnel never sees it.
+
+### Internal pipeline
+
+The controller should implement a staged pipeline:
+
+1. Parse YAML into an internal model.
+2. Validate schema and topology.
+3. Generate target configs.
+4. Produce a plan/diff.
+5. Apply atomically.
+6. Reload or restart affected components.
+7. Report final status.
+
+This allows the platform to remain backend-agnostic internally while still targeting NGINX, runit, and one or more tunnel providers.
+
+### Idempotency and state
+
+Operational artifacts (runit service directories, NGINX config, tunnel config) are real files — that is what runit, NGINX, and the tunnel agent read. In addition the controller keeps a small state sidecar as a single JSON file written next to the config (e.g. `.outpost/state.json`), holding only what files cannot cheaply answer: the digest of the last successfully applied spec, a bounded rolling history of recent applies, and per-service last-known status timestamps.
+
+- **Idempotent apply**: `outpost apply` compares the desired spec's digest to the stored applied digest. If they match and services are up, the apply is a no-op.
+- **Atomicity**: applies are staged, validated (`nginx -t`), the current set backed up as last-known-good, then swapped and reloaded; on health failure the apply rolls back to that backup. This is not a true cross-system transaction, but a safe swap-and-rollback over a known-good baseline.
+- **No SQLite in v1**: a query engine is unnecessary for digest/history/status. SQLite (for queryable long history) is deferred to v2 if needs grow. The JSON sidecar is portable, readable, git-ignoreable, and written atomically via temp-file rename.
+
+## Functional requirements
+
+### 1. Service management
+
+The platform must support defining and running multiple long-lived services, including Go binaries and Python applications. Each service must be startable, stoppable, restartable, and inspectable individually or as part of the full stack through the CLI.
+
+#### Listeners and ports
+
+Each service has a bind address the platform always knows; it is used for health checks and to build the NGINX upstream. The address is resolved one of two ways:
+
+- **Declared** — set `listen:` to `host:port` or a unix socket path. The operator must ensure the binary binds there.
+- **Allocated** — omit `listen:` and the platform assigns a port on `127.0.0.1` from a default range (configurable, e.g. `18000-18999`).
+
+In both cases the platform injects the address into the service environment as `PORT`, `ADDRESS` (`host:port`), and (for replicas) `OUTPOST_REPLICA_INDEX` and `OUTPOST_REPLICAS`, so a binary can bind `${PORT}` without restating the port in its flags. Platform-injected vars take precedence over operator `environment`/`env_file`; declaring `listen` and also setting `PORT`/`ADDRESS` in environment is a validation error.
+
+Rules:
+
+- `replicas > 1` requires allocation (omit `listen:`); each replica gets its own port discovered via the injected env. Explicit multi-port is not supported.
+- Allocated ports are stable across restarts and re-applies (persisted in the state sidecar) unless the service definition changes, so NGINX upstreams do not churn.
+- Default listener transport is TCP on loopback; unix sockets are opt-in via `listen: <path>`.
+
+Required lifecycle operations:
+
+- Start one service.
+- Stop one service.
+- Restart one service.
+- Check status for one service.
+- Start all services.
+- Stop all services.
+- Restart all services.
+- Tail service logs.
+- Signal or reload advanced services where supported.
+
+### 2. Routing and ingress
+
+The platform must generate NGINX config that supports host-based and path-based routing across multiple sub-apps and microservices. It must support multiple backends per logical service so NGINX can balance requests across replicas using native upstream capabilities such as round robin, weighted balancing, least connections, and affinity-related patterns where appropriate.
+
+Required routing features:
+
+- Virtual hosts.
+- Path prefix routing.
+- Reverse proxying to service listeners.
+- Upstream grouping for replicas.
+- Graceful reload after validated config changes.
+
+#### Route shape
+
+`routes` is a **list of virtual-host objects**. Each entry has a `host` (a literal or wildcard like `*.example.com`); omit `host` to mark the default/catch-all vhost. Within a vhost, `paths` is a map of **path prefix to target spec**. Routing match rules in v1:
+
+- Path keys are **prefix** matches, **longest-prefix-wins** (so `/api` beats `/`).
+- Exact-path and regex matching are deferred to v2.
+- Duplicate `host` entries across the list are a validation error.
+- Wildcards and the catch-all vhost are awkward as YAML map keys, so a list is used instead of a host-keyed map.
+
+Example:
+
+```yaml
+routes:
+  - host: app.example.com
+    paths:
+      /api: { to: api }
+      /:    { to: web }
+  - host: "*.example.com"      # wildcard
+    paths:
+      /: { to: web }
+  -                            # default/catch-all vhost (host omitted)
+    paths:
+      /: { to: web }
+```
+
+#### Policies
+
+A path's target spec may carry an inline `policy:` block. In v1 policies are **inline-only and logical** — they express intent, never raw NGINX directives, so the platform can compile them to backend config without leaking backend nouns into the source model. Named/reusable middleware chains are deferred to v2.
+
+v1 policy set:
+
+- `rate_limit`: `{ rps, burst }`.
+- `request_headers` / `response_headers`: `{ add, set, remove }` (each a map).
+- `auth`: `{ basic: <htpasswd file path> }`.
+
+In v1, policies attach at the **path level only**; there is no vhost- or global-level policy block. Example:
+
+```yaml
+routes:
+  - host: app.example.com
+    paths:
+      /api:
+        to: api
+        policy:
+          rate_limit: { rps: 100, burst: 50 }
+          request_headers:
+            add: { X-Forwarded-By: outpost }
+          auth:
+            basic: ./secrets/users.htpasswd
+      /:
+        to: web
+```
+
+### 3. Exposure
+
+The platform must support secure public exposure through a file-configured tunnel provider, with Cloudflare Tunnel as the default backend in v1. The exposure model must support multiple services and hostnames behind a single tunnel configuration via ordered ingress rules.
+
+In v1 all public exposure routes through NGINX: the traffic path is `tunnel -> nginx -> service`. The tunnel terminates at NGINX, which provides the single TLS termination point, security boundary, and policy layer. Direct tunnel-to-service exposure is deferred to a later version. A service with no route is still supervised by runit and reachable on its localhost listener, but that is an unexposed service, not public exposure.
+
+TLS is tunnel-managed only in v1. The tunnel provider owns the public certificate; NGINX listens on plain HTTP locally because the encrypted boundary is the tunnel. The platform does not issue, store, or renew certificates, and does not manage host trust stores. Local HTTPS for LAN-direct access (e.g. mkcert/self-signed) is deferred to v2 and is coupled to any future LAN/direct mode. As a consequence, upstream TLS/mTLS from NGINX to services is also out of scope for v1 — services listen on plain HTTP or raw TCP on localhost.
+
+Requirements:
+
+- Expose one or more services under one domain set or tunnel.
+- Support hostname-based mapping to internal NGINX endpoints.
+- Keep the public exposure abstraction generic enough to add ngrok later.
+
+### 4. Security controls
+
+The platform must allow NGINX to function as the outer security layer for sub-apps and APIs through centralized gateway policies. This includes support for headers, rate limiting, upstream TLS/mTLS where needed, access restrictions, and optional integration with a public auth layer such as Cloudflare Access.
+
+This product will not provide a full enterprise API management suite, but it should allow users to secure small internal services behind one controlled entry point.
+
+### 5. Health and supervision
+
+runit will provide process supervision and restart-on-exit behavior. The platform controller must add higher-level health semantics beyond simple process existence, because runit alone is not a full orchestrator with rich readiness and liveness policies.
+
+Requirements:
+
+- Track process state from runit supervision.
+- Optionally check HTTP/TCP health endpoints.
+- Delay route activation until a service is healthy.
+- Surface unhealthy states in CLI and MCP status outputs.
+
+Health behavior in v1 is scoped to **status reporting and apply-time readiness gating**, not ongoing traffic shaping:
+
+- Health is always reported in `status` and MCP outputs.
+- During `outpost apply`, a route to a service is only enabled if the service passes its startup/readiness check within a configured timeout. If it never becomes healthy, NGINX is still reloaded but the route is left in a disabled/maintenance state and the apply is reported as degraded, rather than pointing at a dead backend.
+- runit continues to restart crashed processes, so the "process died" case is handled by supervision.
+- Continuously pulling an unhealthy-but-alive service out of the live NGINX upstream (passive health checks or active probe-driven reloads) is deferred to v2, since it implies a background component and reload churn that a v1 control plane should not own.
+
+### 6. Logging and status
+
+The platform must provide a unified operator-facing status view that merges service state, route state, and exposure state. It should wrap runit log handling and optionally tail NGINX logs so operators and agents can inspect problems without understanding low-level file layout.
+
+Required commands:
+
+- `status`
+- `logs`
+- `routes`
+- `exposure`
+- `ps` or equivalent service list/status view.
+
+### 7. Environment and secrets
+
+Services receive environment variables in Docker Compose style, supporting both inline values and file references:
+
+- `services.<name>.environment`: an inline map (`KEY: value`) or list (`KEY=value`), with `${VAR}` interpolation resolved from the host environment at generate time. Suited to non-secret configuration.
+- `services.<name>.env_file`: one or more paths to env files loaded verbatim. Suited to secrets and larger env sets; the operator owns these files (typically gitignored or decrypted out of band via `age`/`sops`).
+- Precedence matches Compose: inline `environment` overrides `env_file`; later `env_file` entries override earlier ones.
+
+v1 ships no built-in secret store — no encryption at rest, generation, or rotation. The platform reads env sources and passes them through to runit without interpreting values. Safety constraints: `status` and `logs` never echo environment contents, and `outpost generate` must reference the env source (e.g. via an env dir) in rendered supervision config rather than copying secret values into broadly-readable generated files where avoidable.
+
+The CLI is the primary operator interface and the canonical engine used by higher-level integrations. It must be stable, scriptable, and deterministic.
+
+### Required v1 command surface
+
+- `outpost validate`
+- `outpost generate`
+- `outpost apply`
+- `outpost status`
+- `outpost logs`
+- `outpost start <service>`
+- `outpost stop <service>`
+- `outpost restart <service>`
+- `outpost up`
+- `outpost down`
+- `outpost ps`
+- `outpost routes`
+- `outpost exposure`
+
+These commands should map internally to render/apply logic plus runit `sv` operations and tunnel-provider state inspection.
+
+### Apply semantics
+
+`outpost apply` must:
+
+1. Parse and validate the platform spec.
+2. Generate all target configs to a staging area.
+3. Test the NGINX config before activation.
+4. Write configs atomically (swap last-known-good for staged set).
+5. Start or reload affected services.
+6. Gracefully reload NGINX.
+7. Verify health and report final state.
+
+Rollback behavior is defined in "Idempotency and state": on an invalid config test or post-apply health failure, restore the last-known-good backup set and reload; if health checks never pass within the timeout, the apply is reported as degraded.
+
+## MCP and coding-agent integration
+
+The product must expose a structured, minimal MCP server so coding agents can inspect and operate the platform through typed tools instead of raw shell access. MCP is appropriate because it standardizes tool discovery and invocation for hosts and agent clients.
+
+### MCP v1 tools
+
+- `list_services`
+- `get_service_status`
+- `start_service`
+- `stop_service`
+- `restart_service`
+- `apply_config`
+- `validate_config`
+- `show_routes`
+- `show_exposure`
+- `tail_logs`
+
+The CLI should remain the core implementation, with the MCP server acting as an adapter over the same internal library.
+
+## Runtime targets
+
+### Primary targets
+
+| Target | Support rationale |
+|---|---|
+| Android via Termux | Termux-services already uses runit, making Android a strong first-class target for this architecture. |
+| Raspberry Pi / Linux | Linux is a natural fit for NGINX, runit, and tunnel agents. |
+| macOS | runit is available on macOS, including via MacPorts, making it a viable target for a consistent supervision model. |
+
+### Explicitly deferred
+
+Windows is out of scope for v1 because runit is a UNIX-oriented supervision system and the runtime strategy is optimized for Unix-like targets.
+
+## Adoption strategy for exposure backend
+
+Cloudflare Tunnel should be the default v1 exposure backend because it is widely adopted in self-hosting workflows, supports exposing multiple services from a single configuration, and removes the need for direct port forwarding. The platform should keep the exposure abstraction generic enough to support ngrok later as a second provider for developer-centric or temporary workflows.
+
+The platform should not make tunnel-provider syntax the source model. Instead, the source model should describe logical exposure intent and compile it into provider-native configuration.
+
+## Open questions
+
+(None remaining for v1 — all original questions have been resolved into the sections above. Deferred items are noted inline as v2 candidates.)
+
+## Success criteria
+
+The product will be successful in v1 if a technical user can take one declarative config file and, on Android/Termux, Raspberry Pi Linux, or macOS, reliably:
+
+- start a small multi-service stack,
+- route requests through NGINX,
+- load balance replicas where configured,
+- expose selected endpoints through a tunnel,
+- inspect service health and logs,
+- operate everything through a CLI and MCP surface,
+- and do so without manually authoring raw NGINX, runit, or tunnel configs.
+
+## v1 summary
+
+The differentiator is not the infrastructure primitives — NGINX, runit, and a tunnel provider are all proven and unglamorous. It is the clean logical abstraction over them, the safe apply-and-rollback workflow, and a portable operational model that works the same on a phone, a Pi, and a Mac, drivable by both an operator and a coding agent.
