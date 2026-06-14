@@ -19,6 +19,7 @@ from outpost.engine import (
     PortAllocationError,
     RenderError,
     allocate_all,
+    compute_facts,
     render_unit,
 )
 
@@ -98,7 +99,10 @@ def render(
     svc = cfg.services[service]
     try:
         ports = allocate_all(cfg)
-        unit = render_unit(service, svc, ports.get(service))
+        # Build the cross-service fact table so `${other.ADDRESS}` (etc.) in
+        # this service's env/args resolves — ports drive the addresses.
+        facts = compute_facts(cfg, ports)
+        unit = render_unit(service, svc, ports.get(service), facts=facts)
     except (PortAllocationError, RenderError) as exc:
         typer.echo(f"render failed: {exc}", err=True)
         raise typer.Exit(code=_EXIT_OPERATIONAL) from exc

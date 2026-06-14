@@ -7,7 +7,13 @@ allocator. ``apply``/``update`` orchestration arrives in Phase 5/6.
 from __future__ import annotations
 
 from outpost.engine.ports import PortAllocationError, allocate_all
-from outpost.engine.render import RenderError, UnitSpec, build_spec, render_unit
+from outpost.engine.render import (
+    RenderError,
+    UnitSpec,
+    build_spec,
+    compute_facts,
+    render_unit,
+)
 
 __all__ = [
     "PortAllocationError",
@@ -15,5 +21,6 @@ __all__ = [
     "UnitSpec",
     "allocate_all",
     "build_spec",
+    "compute_facts",
     "render_unit",
 ]
