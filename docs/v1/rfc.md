@@ -349,6 +349,12 @@ Services receive environment variables in Docker Compose style:
 
   - one or more env files loaded verbatim
 
+**Cross-service references.** Beyond bare `${VAR}` (self-scoped), values may
+reference another service's platform facts via `${<name>.<FIELD>}`, where
+`FIELD` is `ADDRESS`, `PORT`, or `DATA_DIR`. Only platform facts are exposed
+cross-service — operator-defined environment is never reachable across services.
+Unknown services, unexposed fields, and fields the target lacks fail fast.
+
 Precedence:
 
 1. platform-injected variables

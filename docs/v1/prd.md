@@ -228,6 +228,16 @@ Services receive environment variables in Docker Compose style:
 - `services.<name>.env_file`: one or more paths to env files loaded verbatim. Suited to secrets; the operator owns these files (typically gitignored or decrypted out of band via `age`/`sops`).
 - Precedence matches Compose: inline `environment` overrides `env_file`; later `env_file` entries override earlier ones.
 
+**Cross-service references.** Any `environment` value or `args` entry can also
+reference another service's platform facts via the dotted form
+`${<name>.<FIELD>}`, where `FIELD` is one of `ADDRESS`, `PORT`, or `DATA_DIR`.
+For example, `${api.ADDRESS}` resolves to whatever address the `api` service was
+given (declared or allocated), and `${db.DATA_DIR}` gives the data directory of
+`db`. Only the three platform facts are exposed cross-service — one service's
+operator-defined `environment` is never reachable from another (that channel may
+carry secrets). A reference to an unknown service, an unexposed field, or a
+field the target lacks fails fast.
+
 v1 ships no built-in secret store. The platform reads env sources and passes them through via the generated unit's `Environment=` / `EnvironmentFile=` without interpreting values. Safety constraints: `status` and `logs` never echo environment contents, and generated unit files reference the env source (e.g. via `EnvironmentFile=`) rather than copying secret values into broadly-readable generated files where avoidable.
 
 ### 8. Source and updates

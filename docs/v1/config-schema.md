@@ -88,6 +88,29 @@ Precedence (highest → lowest):
 
 Declaring `listen` **and** setting `PORT`/`ADDRESS` in `environment` is a validation error. `status` and `logs` never echo environment contents; generated units reference env files via `EnvironmentFile=` rather than copying secrets into broadly-readable files where avoidable.
 
+### Service references
+
+Beyond bare `${VAR}` (which resolves against this service's own merged env), any
+`environment` value or `args` entry can reference **another service's platform
+facts** via the dotted form `${<name>.<FIELD>}`:
+
+| Reference | Resolves to |
+| --- | --- |
+| `${api.ADDRESS}` | `api` service's address (`host:port` or socket path) |
+| `${worker.PORT}` | `worker` service's TCP port (absent for unix-socket services) |
+| `${db.DATA_DIR}` | `db` service's persistent data directory |
+
+Only the three platform facts (`ADDRESS`, `PORT`, `DATA_DIR`) are exposed
+cross-service. One service's operator-defined `environment` is never reachable
+from another — that channel may carry secrets, and copying them across generated
+unit files would violate the security rule above. A reference to an unknown
+service, an unexposed field, or a field the target lacks (e.g. `PORT` on a
+unix-socket service) fails fast rather than emitting a literal.
+
+A reference with no dot — `${ADDRESS}`, `${PORT}`, `${DATA_DIR}`, or any
+operator-defined key — is shorthand for `<self>.<FIELD>` and resolves against
+this service's own merged environment (its inline env plus its platform facts).
+
 ## `routes`
 
 A list of virtual-host objects. Path keys are prefix matches, longest-prefix-wins (so `/api` beats `/`).

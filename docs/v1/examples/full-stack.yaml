@@ -30,6 +30,7 @@ services:
     environment:                                      # inline map; ${VAR} interpolated at generate time
       LOG_LEVEL: info
       PUBLIC_BASE_URL: https://app.example.com
+      API_URL: http://${api.ADDRESS}                   # cross-service ref: api's address (host:port)
     env_file:                                         # one or more env files, loaded verbatim (secrets)
       - ./secrets/web.env
       - ./secrets/shared.env
