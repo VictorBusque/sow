@@ -105,9 +105,7 @@ def compute_facts(config: OutpostConfig, ports: Mapping[str, int]) -> dict[str, 
     return facts
 
 
-def _resolve_address(
-    name: str, service: Service, port: int | None
-) -> tuple[str, int | None]:
+def _resolve_address(name: str, service: Service, port: int | None) -> tuple[str, int | None]:
     """Resolve a service's ``(address, port)`` pair.
 
     ``address`` is ``host:port`` (TCP) or the socket path (unix). ``port`` is the
