@@ -1,10 +1,12 @@
-"""Render an immutable config model into a systemd user unit.
+"""Render an immutable config model into deployable artifacts.
 
-The pipeline is: model → a structured :class:`UnitSpec` value → Jinja2 template.
-Keeping the Python side responsible for *all* policy (env precedence, ``${VAR}``
-interpolation, path resolution) and the template responsible only for
-presentation means the template stays thin and the logic is unit-testable
-without rendering.
+The pipeline is: model → a structured spec value → Jinja2 template. Three
+artifact kinds share this shape: the systemd **service unit**, the **NGINX server
+blocks** (one per route), and the **cloudflared tunnel config**. Keeping the
+Python side responsible for *all* policy (env precedence, ``${VAR}``
+interpolation, path resolution, upstream-URL formatting, longest-prefix ordering)
+and the templates responsible only for presentation means the templates stay
+thin and the logic is unit-testable without rendering.
 
 Env precedence (config-schema.md §"Platform-injected environment"):
 platform-injected (``PORT``/``ADDRESS``/``DATA_DIR``) highest, then inline
@@ -35,9 +37,21 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, Template
 
-from outpost.models import OutpostConfig, Service
+from outpost.constants import NGINX_PORT
+from outpost.models import OutpostConfig, Route, Service
 
-__all__ = ["RenderError", "UnitSpec", "build_spec", "compute_facts", "render_unit"]
+__all__ = [
+    "CloudflaredSpec",
+    "NginxLocation",
+    "NginxServerSpec",
+    "RenderError",
+    "UnitSpec",
+    "build_spec",
+    "compute_facts",
+    "render_cloudflared",
+    "render_nginx",
+    "render_unit",
+]
 
 # ${VAR} — bare self-reference (letters/digits/underscore, braced only; we don't
 # interpolate bare $FOO). The name never contains a dot.
@@ -167,6 +181,11 @@ class UnitSpec:
 
 def _template() -> Template:
     """Load the service unit template (shipped with the package)."""
+    return _template_named("service.j2")
+
+
+def _template_named(name: str) -> Template:
+    """Load a packaged Jinja2 template by filename from ``templates/``."""
     env = Environment(
         loader=FileSystemLoader(str(_TEMPLATE_DIR)),
         undefined=StrictUndefined,
@@ -174,7 +193,7 @@ def _template() -> Template:
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    return env.get_template("service.j2")
+    return env.get_template(name)
 
 
 def render_unit(
@@ -288,3 +307,160 @@ def _interpolate(name: str, value: str, scope: _Scope) -> str:
         )
 
     return _VAR_RE.sub(replace, value)
+
+
+# ===========================================================================
+# NGINX server blocks
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class NginxLocation:
+    """One ``location`` block within a server: a path prefix and its upstream.
+
+    ``upstream`` is the fully-formed ``proxy_pass`` target —
+    ``http://127.0.0.1:<port>`` (TCP) or ``http://unix:<socket>`` (unix). The
+    template emits it verbatim.
+    """
+
+    prefix: str
+    upstream: str
+
+
+@dataclass(frozen=True)
+class NginxServerSpec:
+    """One ``server`` block, computed from a :class:`~outpost.models.Route`.
+
+    ``listen`` is the ``host:port`` the user NGINX binds (``127.0.0.1:41999``).
+    ``server_name`` is empty for the catch-all vhost; ``is_default`` marks that
+    vhost as ``default_server`` so unmatched hosts land on it. ``locations`` are
+    longest-prefix-first (presentation; NGINX matches longest prefix regardless).
+    """
+
+    listen: str
+    server_name: str
+    is_default: bool
+    locations: list[NginxLocation] = field(default_factory=list)
+
+
+def upstream_url(service: Service, port: int | None) -> str:
+    """Format a service's address as an NGINX ``proxy_pass`` target.
+
+    TCP (declared or allocated): ``http://127.0.0.1:<port>``. Unix socket:
+    ``http://unix:<path>`` (the ``http://unix:`` form NGINX accepts for
+    ``proxy_pass``). No trailing slash — a prefix ``location`` with a URI-less
+    ``proxy_pass`` preserves the request path.
+    """
+    if service.is_unix_listen:
+        return f"http://unix:{service.listen}"
+    address, _resolved = _resolve_address("<route>", service, port)
+    # _resolve_address returns a ``host:port`` string for TCP services.
+    return f"http://{address}"
+
+
+def build_nginx_specs(config: OutpostConfig, ports: Mapping[str, int]) -> list[NginxServerSpec]:
+    """Compute one :class:`NginxServerSpec` per route.
+
+    ``ports`` is the allocator output (allocated ports only). A route's location
+    targets resolve their upstream from the service + its port; a target with no
+    allocated port and no declared listen is an internal error (the allocator
+    runs before rendering), so it raises :class:`RenderError`.
+    """
+    specs: list[NginxServerSpec] = []
+    for route in config.routes:
+        locations = [
+            NginxLocation(
+                prefix=prefix,
+                upstream=_route_upstream(config, target.to, ports, route),
+            )
+            # Longest-prefix first: strip the leading ``/`` for length comparison
+            # so ``/api`` sorts before ``/`` regardless of the comparison base.
+            for prefix, target in sorted(
+                route.paths.items(), key=lambda kv: len(kv[0]), reverse=True
+            )
+        ]
+        specs.append(
+            NginxServerSpec(
+                listen=f"127.0.0.1:{NGINX_PORT}",
+                server_name=route.host,
+                is_default=(route.host == ""),
+                locations=locations,
+            )
+        )
+    return specs
+
+
+def _route_upstream(
+    config: OutpostConfig, name: str, ports: Mapping[str, int], route: Route
+) -> str:
+    """Resolve a routed target service's ``proxy_pass`` URL.
+
+    The model's topology validator already guaranteed ``to`` references a real
+    service, so a miss here is a logic bug, not operator config — surfaced as a
+    :class:`RenderError` rather than a ``KeyError``.
+    """
+    svc = config.services.get(name)
+    if svc is None:  # pragma: no cover - topology validator rejects this first
+        raise RenderError(
+            f"route {route.host or '<catch-all>'}: target {name!r} is not a defined service"
+        )
+    return upstream_url(svc, ports.get(name))
+
+
+def render_nginx(config: OutpostConfig, ports: Mapping[str, int]) -> str:
+    """Render all routes' NGINX server blocks, concatenated.
+
+    Each route becomes one ``server`` block. The output is the contents of a
+    single file included by the user NGINX's ``nginx.conf`` (the include line is
+    written once by ``init``). One file (not one per vhost) keeps the include
+    line stable across applys: adding a route changes the file's contents, not
+    the set of files NGINX loads.
+    """
+    template = _template_named("nginx_server.j2")
+    blocks = [template.render(spec=spec) for spec in build_nginx_specs(config, ports)]
+    return "\n".join(blocks).rstrip() + "\n"
+
+
+# ===========================================================================
+# cloudflared tunnel config
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class CloudflaredSpec:
+    """The cloudflared ``config.yml`` model.
+
+    ``tunnel`` is the tunnel UUID/name. The apply layer reads it from the
+    operator's credentials JSON (prd.md: "Outpost renders a cloudflared config
+    from ``exposure.cloudflare`` (``credentials_file`` plus the ``hosts``)");
+    rendering itself stays pure by taking it as a parameter. ``nginx_service``
+    is the local NGINX all hosts route to (``http://127.0.0.1:41999``).
+    """
+
+    tunnel: str
+    credentials_file: str
+    hosts: list[str]
+    nginx_service: str = f"http://127.0.0.1:{NGINX_PORT}"
+
+
+def render_cloudflared(config: OutpostConfig, tunnel: str) -> str:
+    """Render the cloudflared ``config.yml`` from ``exposure.cloudflare``.
+
+    Every exposed host routes to the single user NGINX (NGINX then dispatches by
+    Host). The mandatory terminal ``http_status:404`` catch-all is appended by
+    the template. Raises :class:`RenderError` if the config has no exposure — a
+    cloudflared config without a tunnel is meaningless, and this function should
+    not have been called.
+
+    ``tunnel`` is the UUID/name read from the credentials file by the caller; it
+    is not part of ``outpost.yaml`` and so cannot be derived from ``config``.
+    """
+    if config.exposure is None:
+        raise RenderError("cannot render cloudflared config: exposure is not defined")
+    cf = config.exposure.cloudflare
+    spec = CloudflaredSpec(
+        tunnel=tunnel,
+        credentials_file=cf.credentials_file,
+        hosts=list(cf.hosts),
+    )
+    return _template_named("cloudflared.j2").render(spec=spec)

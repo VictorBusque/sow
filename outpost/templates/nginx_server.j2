@@ -1,0 +1,28 @@
+{# NGINX server block for one virtual host (route).
+
+   One block per entry in `routes`. All blocks share the NGINX listen port
+   (127.0.0.1:41999); NGINX dispatches by server_name. The catch-all vhost
+   (host omitted) is the default_server. Locations are emitted longest-prefix
+   first so a human reading the config sees the most-specific match first; NGINX
+   matches longest prefix regardless of order, so this is presentation only.
+
+   The upstream target (proxy_pass) is resolved upstream of the template:
+   `http://127.0.0.1:<port>` for TCP, `http://unix:<socket>` for unix sockets.
+   No trailing slash on the URL — a prefix `location` with a URI-less proxy_pass
+   preserves the request path, which is the reverse-proxy behavior we want. #}
+server {
+{% if spec.is_default %}
+    listen {{ spec.listen }} default_server;
+{% else %}
+    listen {{ spec.listen }};
+{% endif %}
+{% if spec.server_name %}
+    server_name {{ spec.server_name }};
+{% endif %}
+
+{% for loc in spec.locations %}
+    location {{ loc.prefix }} {
+        proxy_pass {{ loc.upstream }};
+    }
+{% endfor %}
+}

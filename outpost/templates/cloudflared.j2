@@ -1,0 +1,16 @@
+{# cloudflared tunnel config (config.yml).
+
+   All public hosts route to the single user-level NGINX
+   (http://127.0.0.1:41999); NGINX then dispatches by Host. The catch-all
+   http_status:404 rule is mandatory in cloudflared config and always last.
+   `tunnel` (the UUID) and `credentials-file` come straight from the exposure
+   block. #}
+tunnel: {{ spec.tunnel }}
+credentials-file: {{ spec.credentials_file }}
+
+ingress:
+{% for host in spec.hosts %}
+    - hostname: {{ host }}
+      service: {{ spec.nginx_service }}
+{% endfor %}
+    - service: http_status:404

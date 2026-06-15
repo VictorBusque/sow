@@ -54,7 +54,13 @@ These are the details the specs left to implementation. Pinning them now prevent
 
 **Health probe (stdlib only, no new dep).** `http` check via `urllib.request` against `http://127.0.0.1:<port><path>` (2xx/3xx passes); `tcp` check via `socket.create_connection`. For a unix-socket `listen`, connect to the socket path. Poll every ~1s up to `health.timeout` (default 30s). Always probe the **local listener**, never NGINX.
 
-**NGINX validation in staging.** `nginx -t` needs a complete `nginx.conf`, not bare server blocks (`stack.md`). In the staging dir, write a throwaway `nginx.conf` whose `http{}` block `include`s the staged `servers/*.conf`, mirroring the live user-unit's include line, then run `nginx -t -c <staging>/nginx.conf` (with the right `-p` prefix). Only `os.replace()` into `generated/nginx/` after it passes.
+**NGINX generated file (single file).** `stage` writes **one** server-blocks file — `generated/nginx/servers.conf` — containing every route's `server {}` block, rather than one file per vhost. This keeps `init`'s single `include` line stable across applys: adding a route changes the file's contents, not the set of files NGINX loads. The user NGINX's `nginx.conf` (written by `init`) carries `include ~/.local/share/outpost/generated/nginx/servers.conf;` inside its `http{}` block.
+
+**NGINX server-block shape.** Every route → one `server` block, all sharing `listen 127.0.0.1:41999;` (NGINX dispatches by `server_name`). The catch-all vhost (`host` omitted) gets `listen ... default_server;` and no `server_name` (unmatched hosts land on it). Literal/wildcard hosts emit `server_name <host>;` verbatim. `location`s are emitted longest-prefix-first (presentation only — NGINX matches longest prefix regardless of order). Upstream URLs are `http://127.0.0.1:<port>` (TCP, declared or allocated) or `http://unix:<socket>` (unix), **with no trailing slash** so a prefix `location` with a URI-less `proxy_pass` preserves the request path. v1 adds no `proxy_set_header`/policy (prd.md "no in-band traffic policy").
+
+**cloudflared tunnel id.** The `tunnel:` UUID is **not** in `outpost.yaml` — it lives in the operator's credentials JSON. So `render_cloudflared`/`stage` take `tunnel` as a parameter; the apply layer reads it from the credentials file (`TunnelID` field) and passes it in. The rendered config is the canonical cloudflared form: `tunnel:`/`credentials-file:` + one `ingress` rule per exposed host (`service: http://127.0.0.1:41999`) + a terminal `- service: http_status:404` catch-all.
+
+**NGINX validation in staging.** `nginx -t` needs a complete `nginx.conf`, not bare server blocks (`stack.md`). In the staging dir, write a throwaway `nginx.conf` whose `http{}` block `include`s the staged `servers.conf`, mirroring the live user-unit's include line, then run `nginx -t -c <staging>/nginx.conf` (with the right `-p` prefix). Only `os.replace()` into `generated/nginx/` after it passes.
 
 **Last-known-good backup (single slot).** Before the atomic swap, copy `generated/` → `generated/.lkg/`. Revert = copy `.lkg/` back over `generated/` + `daemon-reload` + `nginx -t` + `nginx reload`. One slot only — there is no history to roll back *through* (non-goal).
 
@@ -72,21 +78,23 @@ These are the details the specs left to implementation. Pinning them now prevent
 
 Effort labels are rough (S/M/L). Each phase lists tasks, its dependency, and a definition of done (DoD).
 
-### Phase 0 — Scaffolding (S)
+> **Status:** Phases 0–4 are complete (`ruff`/`ty`/`pytest` green; 155 tests). **Next up: Phase 5 — Apply pipeline**, which wires `stage` → `nginx -t` → last-known-good backup → atomic swap → `daemon_reload`/start → health probe → `nginx reload` + cloudflared start → commit `state.json`, with rollback on any failure. The seams it depends on are all in place: `config.load`/`digest`, the `sysdeps` wrappers, `StateStore`, `stage`, and `render_*`.
+
+### Phase 0 — Scaffolding (S) — ✅ DONE
 - `pyproject.toml`: `uv`, `requires-python >=3.12`, runtime deps (`typer`, `pydantic>=2`, `jinja2`, `mcp`), dev deps (`ruff`, `ty`, `pytest`).
 - Package skeleton: `outpost/{cli,mcp,engine,models,sysdeps,templates,state}/__init__.py`; `tests/{unit,integration,mocks}/__init__.py`.
 - `ruff` config (line length, rule set), `ty` strict config, `pytest` config (`testpaths`).
 - Console-script entry point `outpost` → `cli.app`.
 - *DoD:* `uv sync` works; `uvx ruff check .`, `uvx ty .`, `uv run pytest` all run cleanly (0 tests).
 
-### Phase 1 — Models & config layer (M)
+### Phase 1 — Models & config layer (M) — ✅ DONE
 - Pydantic v2 models, all `frozen=True`: `Source`, `Health`, `Service`, `PathTarget`, `Route`, `CloudflareExposure`, `Exposure`, `OutpostConfig`.
 - Validators implementing **every** rule in `config-schema.md` §"Validation rules" (listen/PORT/ADDRESS exclusion, port collisions incl. `41999`, duplicate host, `to` references a service, `port_range` parse, `health` exactly-one-of, `restart` enum, `exposure.hosts` ⊆ routed hosts).
 - `config.load(path)` → `OutpostConfig` (respect `--config`; default `~/.config/outpost/outpost.yaml`).
 - `config.digest(config)` → canonical-SHA256 (incl. `source.sha`).
 - *DoD:* unit test per validation rule; digest stability test (same config → same digest; sha change → digest change); `ty` strict clean.
 
-### Phase 2 — sysdeps layer (M)
+### Phase 2 — sysdeps layer (M) — ✅ DONE
 - `sysdeps/run.py`: typed subprocess runner (`check=True`, capture stderr, raise a typed `SubprocessError` carrying stderr).
 - `sysdeps/git.py`: `clone`, `fetch`, `checkout(sha)`, `resolve_ref(ref)→sha`, `current_sha()`.
 - `sysdeps/systemctl.py` (user scope): `start/stop/restart`, `is_active`, `unit_state`, `daemon_reload`.
@@ -95,16 +103,17 @@ Effort labels are rough (S/M/L). Each phase lists tasks, its dependency, and a d
 - All idempotent (no-op when desired state met) and fail-fast.
 - *DoD:* mocked-`subprocess` unit tests asserting exact command lines, idempotency, and stderr propagation.
 
-### Phase 3 — State & port allocation (M)
-- `state/store.py`: `StateStore` over `~/.local/share/outpost/state.json` with `write_atomic`; schema `{applied_digest, ports: {service: port}, applied_at}`.
-- `engine/ports.py`: `PortAllocator` (first-fit, exclusions, exhaustion → raise).
-- *DoD:* unit tests for first-fit order, exclusion of `41999`/`listen`/allocated, exhaustion, atomic write + reload round-trip.
+### Phase 3 — State & port allocation (M) — ✅ DONE
+- `state/io.py`: `write_atomic(path, bytes)` (temp + `os.replace`, `fsync`, temp cleanup on failure) + `read_text`; the single atomic-write helper reused by `state.json` and every `outpost.yaml` rewrite.
+- `state/store.py`: frozen `State` (`applied_digest`, `ports: {service: port}`, `applied_at`) + `StateStore` over `~/.local/share/outpost/state.json` with canonical-JSON (sorted) atomic writes; missing file ⇒ empty state; malformed/bad-shape ⇒ `StateError`; unknown keys ignored for forward-compat.
+- `engine/ports.py`: `allocate_all` (first-fit, exclusions, exhaustion → raise).
+- *DoD:* unit tests for first-fit order, exclusion of `41999`/`listen`/allocated, exhaustion, atomic write (success/overwrite/temp-cleanup) + reload round-trip. ✅
 
-### Phase 4 — Templates & rendering (M)
+### Phase 4 — Templates & rendering (M) — ✅ DONE
 - `templates/service.j2`, `templates/nginx_server.j2`, `templates/cloudflared.j2`.
-- `engine/render.py`: render a service unit (sets `WorkingDirectory=`, `Environment=`, `EnvironmentFile=`, `Restart=` + sane `RestartSec`/`StartLimit*`), NGINX server blocks (longest-prefix `location`s, upstreams), cloudflared config.
-- `engine/stage.py`: write rendered files into a temp staging dir mirroring `generated/{systemd,nginx,cloudflared}`.
-- *DoD:* integration/snapshot tests — given a config model, rendered unit + conf match expected text; longest-prefix routing verified.
+- `engine/render.py`: render a service unit (`WorkingDirectory=`, `Environment=`, `EnvironmentFile=`, `Restart=` + sane `RestartSec`/`StartLimit*`); NGINX server blocks (one `server` per route sharing the NGINX listen port, catch-all vhost = `default_server` with no `server_name`, longest-prefix `location`s, upstreams `http://127.0.0.1:<port>` / `http://unix:<socket>` with no trailing slash to preserve the path); cloudflared config (`tunnel`/`credentials-file` + one ingress per exposed host → local NGINX, terminal `http_status:404`).
+- `engine/stage.py`: `stage(config, root, tunnel=None)` writes the rendered files into a temp dir mirroring `generated/{systemd,nginx,cloudflared}`; returns a `StagedTree` (unit paths, single `servers.conf`, optional `config.yml`, allocated ports). Never touches the live tree.
+- *DoD:* integration/snapshot tests — given a config model, rendered unit + conf match expected text; longest-prefix routing, default-server, upstream formats, cloudflared catch-all verified; staging writes the right tree and leaves live state untouched. ✅
 
 ### Phase 5 — Apply pipeline (the core) (L)
 - `engine/apply.py` orchestrating the `prd.md` pipeline: parse+validate → materialize sources (clone if missing; **seed** empty `sha` via `resolve_ref` + write-back + recompute digest; `checkout(sha)`; build iff marker stale → write marker) → allocate ports → render to staging → `nginx -t` via throwaway conf → **backup** `generated/`→`.lkg/` → atomic swap → `daemon_reload` + start/restart affected → health probe per defined service → on success: `nginx reload`, ensure cloudflared started, commit `state.json` → on failure: revert from `.lkg/`, reload NGINX back, leave digest unchanged, return failure.
