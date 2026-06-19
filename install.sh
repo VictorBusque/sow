@@ -128,10 +128,10 @@ get_cloudflared() {
     info "installing ${BOLD}cloudflared${RESET} via $PKG_MANAGER..."
     case "$PKG_MANAGER" in
         apt)
-            sudo_cmd mkdir -p /usr/share/keyrings
-            curl -fsSLo /tmp/cloudflared.gpg https://pkg.cloudflare.com/cloudflared.gpg
-            sudo_cmd cp /tmp/cloudflared.gpg /usr/share/keyrings/cloudflared.gpg
-            echo "deb [signed-by=/usr/share/keyrings/cloudflared.gpg] https://pkg.cloudflare.com/cloudflared any main" > /tmp/cloudflared.list
+            sudo_cmd mkdir -p -m 0755 /usr/share/keyrings
+            curl -fsSLo /tmp/cloudflare-main.gpg https://pkg.cloudflare.com/cloudflare-main.gpg
+            sudo_cmd cp /tmp/cloudflare-main.gpg /usr/share/keyrings/cloudflare-main.gpg
+            echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /tmp/cloudflared.list
             sudo_cmd cp /tmp/cloudflared.list /etc/apt/sources.list.d/cloudflared.list
             sudo_cmd apt-get update -qq
             sudo_cmd apt-get install -y cloudflared
