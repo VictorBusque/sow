@@ -78,7 +78,7 @@ These are the details the specs left to implementation. Pinning them now prevent
 
 Effort labels are rough (S/M/L). Each phase lists tasks, its dependency, and a definition of done (DoD).
 
-> **Status:** Phases 0–4 are complete (`ruff`/`ty`/`pytest` green; 155 tests). **Next up: Phase 5 — Apply pipeline**, which wires `stage` → `nginx -t` → last-known-good backup → atomic swap → `daemon_reload`/start → health probe → `nginx reload` + cloudflared start → commit `state.json`, with rollback on any failure. The seams it depends on are all in place: `config.load`/`digest`, the `sysdeps` wrappers, `StateStore`, `stage`, and `render_*`.
+> **Status:** Phases 0–5 are complete (`ruff`/`ty`/`pytest` green; 172 tests). **Next up: Phase 6 — Update**, which wires `fetch` → `resolve_ref` → write ref/sha into config → `apply`. The seams it depends on are all in place: `engine/apply.py`, the `write_source_fields` helper, `config_mod.load`/`digest`, the `sysdeps` wrappers.
 
 ### Phase 0 — Scaffolding (S) — ✅ DONE
 - `pyproject.toml`: `uv`, `requires-python >=3.12`, runtime deps (`typer`, `pydantic>=2`, `jinja2`, `mcp`), dev deps (`ruff`, `ty`, `pytest`).

@@ -17,6 +17,7 @@ import yaml
 from pydantic import ValidationError
 
 from outpost.models import OutpostConfig
+from outpost.state.io import read_text, write_atomic
 
 # Default config path (XDG-strict). See stack.md §5.
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "outpost" / "outpost.yaml"
@@ -89,3 +90,35 @@ def digest(config: OutpostConfig) -> str:
         config.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":")
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def write_source_fields(
+    path: str | Path | None, name: str, *, sha: str | None = None, ref: str | None = None
+) -> None:
+    """Targeted write-back of one service's ``source.{sha,ref}`` into the YAML.
+
+    Used by ``apply`` (the one-time ``sha`` seed) and ``update`` (advancing
+    ``sha``/``ref``). Rather than round-tripping the whole Pydantic model — which
+    would reshape operator fields like the list/map ``environment`` form — this
+    loads the raw YAML, mutates only the named source fields, and writes back
+    atomically. Comments are not preserved (a PyYAML limitation; comment-preserving
+    round-trips would need a new dependency, declined for v1).
+
+    Raises :class:`ConfigError` if the service or its ``source`` block is absent.
+    """
+    config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    raw = yaml.safe_load(read_text(config_path))
+    if not isinstance(raw, dict) or not isinstance(raw.get("services"), dict):
+        raise ConfigError(f"cannot write back: config is malformed: {config_path}")
+    services = raw["services"]
+    if name not in services or not isinstance(services[name], dict):
+        raise ConfigError(f"cannot write back: service {name!r} not in config: {config_path}")
+    source = services[name].setdefault("source", {})
+    if not isinstance(source, dict):
+        raise ConfigError(f"cannot write back: source block of {name!r} is malformed")
+    if sha is not None:
+        source["sha"] = sha
+    if ref is not None:
+        source["ref"] = ref
+    payload = yaml.safe_dump(raw, sort_keys=False, default_flow_style=False, allow_unicode=True)
+    write_atomic(config_path, payload.encode("utf-8"))

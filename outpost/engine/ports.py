@@ -12,6 +12,8 @@ the call; nothing is read from or written to disk here.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from outpost.constants import NGINX_PORT
 from outpost.models import OutpostConfig
 
@@ -33,12 +35,22 @@ def _parse_port_range(value: str) -> tuple[int, int]:
     return int(lo_str), int(hi_str)
 
 
-def allocate_all(config: OutpostConfig) -> dict[str, int]:
+def allocate_all(
+    config: OutpostConfig, preferred: Mapping[str, int] | None = None
+) -> dict[str, int]:
     """Assign a TCP port to every service without a declared ``listen``.
 
     Returns ``{service_name: port}`` only for allocated services — declared
     ``listen`` (TCP or unix-socket) services are absent (they own their address
     and need no allocation).
+
+    ``preferred`` is the previously-persisted allocation (``state.json`` ports).
+    An existing allocation is reused when it still falls in range and does not
+    collide with a reserved/declared port, so a service keeps a stable port
+    across applys (and cross-service ``${svc.PORT}`` references stay valid).
+    # ponytail: we reuse whenever the port is still valid rather than detecting
+    # "service definition changed" — reuse is almost always the desired outcome,
+    # and a service that no longer exists simply drops out of the allocation.
     """
     lo, hi = _parse_port_range(config.port_range)
 
@@ -51,18 +63,23 @@ def allocate_all(config: OutpostConfig) -> dict[str, int]:
         if port is not None:
             taken.add(port)
 
+    pref = preferred or {}
     allocations: dict[str, int] = {}
     for name, svc in config.services.items():
         # Only listen-less services get an allocated TCP port.
         if svc.has_listen:
             continue
 
-        port = _first_free(lo, hi, taken)
-        if port is None:
-            raise PortAllocationError(
-                f"port range {lo}-{hi} exhausted; cannot allocate a port for "
-                f"service {name!r} (in use: {sorted(taken)})"
-            )
+        existing = pref.get(name)
+        if existing is not None and lo <= existing <= hi and existing not in taken:
+            port = existing
+        else:
+            port = _first_free(lo, hi, taken)
+            if port is None:
+                raise PortAllocationError(
+                    f"port range {lo}-{hi} exhausted; cannot allocate a port for "
+                    f"service {name!r} (in use: {sorted(taken)})"
+                )
         taken.add(port)
         allocations[name] = port
 
