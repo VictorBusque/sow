@@ -1,4 +1,4 @@
-"""MCP stdio server — 11 tools matching ``cli-reference.md``.
+"""MCP stdio server — 15 tools matching ``cli-reference.md``.
 
 Each tool is a thin async adapter over the engine functions or sysdeps wrappers
 the CLI uses. The server is single-connection stdio: launched as a subprocess by
@@ -8,18 +8,24 @@ stdin and writes responses to stdout.
 Engine and sysdeps calls are synchronous; the event loop runs them in a thread
 via ``asyncio.to_thread`` so the server stays responsive to the client during
 subprocess-heavy operations (apply, update, logs).
+
+All logging goes to stderr (MCP protocol reserves stdout for JSON-RPC).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import sys
 import traceback
 from pathlib import Path
 
 from mcp.types import CallToolResult, TextContent, Tool
 
+from sow import __version__
 from sow import config as config_mod
+from sow.config import add_route, add_service, remove_route, remove_service
 from sow.engine.apply import apply as _apply
 from sow.engine.update import update as _update
 from sow.paths import RuntimePaths
@@ -34,11 +40,25 @@ _runner: Runner = RealRunner()
 # Injectable config path (set by tests to avoid touching ~/.config/sow/).
 _config_path: str | Path | None = None
 
+# stderr logger — MCP clients read JSON-RPC from stdout, so human-readable
+# startup messages and activity logs go to stderr.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [sow-mcp] %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stderr,
+)
+_log = logging.getLogger("sow.mcp")
+
 
 async def run_server() -> None:
     """Run the stdio MCP server. Called by the CLI ``mcp-server`` command."""
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
+
+    _log.info("sow MCP server v%s starting", __version__)
+    config_label = _config_path or config_mod.DEFAULT_CONFIG_PATH
+    _log.info("config: %s", config_label)
 
     server = Server("sow")
 
@@ -134,6 +154,79 @@ async def run_server() -> None:
                 "required": ["service"],
             },
         ),
+        Tool(
+            name="add_service",
+            description="Add a service definition to the config file.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "git": {"type": "string", "description": "Git remote URL."},
+                    "command": {"type": "string", "description": "Command to run."},
+                    "build": {"type": "string", "description": "Optional build command."},
+                    "listen": {
+                        "type": "string",
+                        "description": "Optional host:port or unix socket.",
+                    },
+                    "ref": {"type": "string", "description": "Optional git ref (branch/tag)."},
+                    "subpath": {"type": "string", "description": "Optional subdirectory."},
+                    "restart": {
+                        "type": "string",
+                        "description": "Restart policy (default on-failure).",
+                    },
+                    "env": {
+                        "type": "object",
+                        "description": "Optional inline environment (KEY: value).",
+                    },
+                    "env_file": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional env file paths.",
+                    },
+                },
+                "required": ["name", "git", "command"],
+            },
+        ),
+        Tool(
+            name="remove_service",
+            description="Remove a service (and its route targets) from the config file.",
+            inputSchema={
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="add_route",
+            description="Add a host/path route to the config file.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "host": {
+                        "type": "string",
+                        "description": "Host (literal, wildcard, or empty for catch-all).",
+                    },
+                    "prefix": {"type": "string", "description": "Path prefix (e.g. / or /api)."},
+                    "to": {"type": "string", "description": "Target service name."},
+                },
+                "required": ["host", "prefix", "to"],
+            },
+        ),
+        Tool(
+            name="remove_route",
+            description="Remove a route (one prefix or the whole host) from the config file.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "host": {"type": "string"},
+                    "prefix": {
+                        "type": "string",
+                        "description": "Path prefix; omit to remove the whole host.",
+                    },
+                },
+                "required": ["host"],
+            },
+        ),
     ]
 
     # -----------------------------------------------------------------------
@@ -147,6 +240,7 @@ async def run_server() -> None:
     @server.call_tool()
     async def handle_call_tool(name: str, arguments: dict | None) -> CallToolResult:
         args = arguments or {}
+        _log.info("tool: %s args=%s", name, _j(args))
         try:
             match name:
                 case "list_services":
@@ -174,18 +268,31 @@ async def run_server() -> None:
                     return await _show_exposure()
                 case "tail_logs":
                     return await _tail_logs(str(args["service"]), int(args.get("lines", 200)))
+                case "add_service":
+                    return await _add_service(args)
+                case "remove_service":
+                    return await _remove_service(str(args["name"]))
+                case "add_route":
+                    return await _add_route(str(args["host"]), str(args["prefix"]), str(args["to"]))
+                case "remove_route":
+                    return await _remove_route(
+                        str(args["host"]), str(args["prefix"]) if "prefix" in args else None
+                    )
                 case _:
                     return _error(f"unknown tool: {name}")
         except Exception as exc:
-            traceback.print_exc()
+            traceback.print_exc(file=sys.stderr)
+            _log.error("tool %s failed: %s", name, exc)
             return _error(str(exc))
 
     async with stdio_server() as (read_stream, write_stream):
+        _log.info("stdio transport ready, waiting for client...")
         await server.run(
             read_stream,
             write_stream,
             server.create_initialization_options(),
         )
+    _log.info("server shutdown")
 
 
 # ===========================================================================
@@ -329,6 +436,52 @@ async def _tail_logs(name: str, lines: int = 200) -> CallToolResult:
         return _error(f"error reading logs: {exc}")
     # Split into lines for structured output.
     return _ok({"service": name, "lines": text.rstrip("\n").split("\n")})
+
+
+async def _add_service(args: dict) -> CallToolResult:
+    try:
+        await asyncio.to_thread(
+            lambda: add_service(
+                _config_path,
+                str(args["name"]),
+                git=str(args["git"]),
+                command=str(args["command"]),
+                build=str(args.get("build", "")),
+                listen=str(args.get("listen", "")),
+                ref=str(args["ref"]) if args.get("ref") is not None else None,
+                subpath=str(args.get("subpath", "")),
+                restart=str(args.get("restart", "on-failure")),
+                env=args.get("env") if isinstance(args.get("env"), dict) else None,
+                env_file=args.get("env_file") if isinstance(args.get("env_file"), list) else None,
+            )
+        )
+        return _ok({"service": str(args["name"]), "added": True})
+    except config_mod.ConfigError as exc:
+        return _error(str(exc))
+
+
+async def _remove_service(name: str) -> CallToolResult:
+    try:
+        await asyncio.to_thread(lambda: remove_service(_config_path, name))
+        return _ok({"service": name, "removed": True})
+    except config_mod.ConfigError as exc:
+        return _error(str(exc))
+
+
+async def _add_route(host: str, prefix: str, to: str) -> CallToolResult:
+    try:
+        await asyncio.to_thread(lambda: add_route(_config_path, host, prefix, to))
+        return _ok({"route": {"host": host, "prefix": prefix, "to": to}, "added": True})
+    except config_mod.ConfigError as exc:
+        return _error(str(exc))
+
+
+async def _remove_route(host: str, prefix: str | None) -> CallToolResult:
+    try:
+        await asyncio.to_thread(lambda: remove_route(_config_path, host, prefix))
+        return _ok({"route": {"host": host, "prefix": prefix}, "removed": True})
+    except config_mod.ConfigError as exc:
+        return _error(str(exc))
 
 
 # ===========================================================================

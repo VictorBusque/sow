@@ -22,6 +22,7 @@ import typer
 
 from sow import __version__
 from sow import config as sow_config
+from sow.config import add_route, add_service, remove_route, remove_service
 from sow.engine.apply import apply as _apply
 from sow.engine.init import init as _init
 from sow.engine.update import update as _update
@@ -418,6 +419,107 @@ def _run_syscmd(label: str, fn: Callable[[], None]) -> None:
 
 def _print_service_status(s: dict) -> None:
     typer.echo(f"{s['name']:20s} {s['unit']:12s} listen={s['listen']}")
+
+
+# ===========================================================================
+# add / rm (config editing)
+# ===========================================================================
+
+
+@app.command()
+def add(
+    name: str = typer.Argument(help="Service name."),
+    git: str = typer.Option(..., "--git", "-g", help="Git remote URL (HTTPS or SSH)."),
+    command: str = typer.Option(..., "--command", "-c", help="Command to run."),
+    build: str = typer.Option("", "--build", "-b", help="Build command (shell)."),
+    listen: str = typer.Option("", "--listen", "-l", help="host:port or unix socket path."),
+    ref: str | None = typer.Option(None, "--ref", "-r", help="Git ref (branch/tag)."),
+    subpath: str = typer.Option("", "--path", help="Subdirectory within repo."),
+    restart: str = typer.Option("on-failure", "--restart", help="Restart policy."),
+    env: Annotated[
+        list[str] | None,
+        typer.Option("--env", "-e", help="Environment var KEY=VALUE (repeatable)."),
+    ] = None,
+    env_file: Annotated[
+        list[str] | None,
+        typer.Option("--env-file", "-E", help="Env file path (repeatable)."),
+    ] = None,
+    config: ConfigOption = sow_config.DEFAULT_CONFIG_PATH,  # type: ignore[assignment]
+) -> None:
+    """Add a service definition to the config file."""
+    env_dict = _parse_env_list(env or [])
+    try:
+        add_service(
+            config,
+            name,
+            git=git,
+            command=command,
+            build=build,
+            listen=listen,
+            ref=ref,
+            subpath=subpath,
+            restart=restart,
+            env=env_dict or None,
+            env_file=env_file or None,
+        )
+    except sow_config.ConfigError as exc:
+        _config_error(exc)
+    typer.echo(f"service {name!r} added")
+
+
+@app.command()
+def rm(
+    name: str = typer.Argument(help="Service name to remove."),
+    config: ConfigOption = sow_config.DEFAULT_CONFIG_PATH,  # type: ignore[assignment]
+) -> None:
+    """Remove a service (and its route targets) from the config file."""
+    try:
+        remove_service(config, name)
+    except sow_config.ConfigError as exc:
+        _config_error(exc)
+    typer.echo(f"service {name!r} removed")
+
+
+@app.command(name="route-add")
+def route_add(
+    host: str = typer.Argument(help="Host (literal, wildcard, or empty for catch-all)."),
+    prefix: str = typer.Argument(help="Path prefix (e.g. / or /api)."),
+    to: str = typer.Option(..., "--to", help="Target service name."),
+    config: ConfigOption = sow_config.DEFAULT_CONFIG_PATH,  # type: ignore[assignment]
+) -> None:
+    """Add a host/path route to the config file."""
+    try:
+        add_route(config, host, prefix, to)
+    except sow_config.ConfigError as exc:
+        _config_error(exc)
+    typer.echo(f"route {host!r}{prefix!r} -> {to!r} added")
+
+
+@app.command(name="route-rm")
+def route_rm(
+    host: str = typer.Argument(help="Host."),
+    prefix: str | None = typer.Argument(None, help="Path prefix (omit to remove the whole host)."),
+    config: ConfigOption = sow_config.DEFAULT_CONFIG_PATH,  # type: ignore[assignment]
+) -> None:
+    """Remove a route (one prefix or the whole host) from the config file."""
+    try:
+        remove_route(config, host, prefix)
+    except sow_config.ConfigError as exc:
+        _config_error(exc)
+    label = f"{host!r}{prefix!r}" if prefix else f"host {host!r}"
+    typer.echo(f"route {label} removed")
+
+
+def _parse_env_list(env: list[str]) -> dict[str, str]:
+    """Parse ['KEY=VALUE', ...] into a dict, failing on bad entries."""
+    result: dict[str, str] = {}
+    for entry in env:
+        if "=" not in entry:
+            typer.echo(f"bad --env: {entry!r} (must be KEY=VALUE)", err=True)
+            raise typer.Exit(code=_EXIT_INVALID_CONFIG)
+        k, _, v = entry.partition("=")
+        result[k] = v
+    return result
 
 
 # ===========================================================================

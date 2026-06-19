@@ -18,7 +18,7 @@ from sow.mcp import server as mcp_srv
 from sow.sysdeps.run import CompletedProcess
 from tests.mocks.runner import FakeRunner
 
-# 11 tools from ``cli-reference.md``.
+# 15 tools from ``cli-reference.md``.
 _REQUIRED_TOOLS: frozenset[str] = frozenset(
     {
         "list_services",
@@ -32,12 +32,16 @@ _REQUIRED_TOOLS: frozenset[str] = frozenset(
         "show_routes",
         "show_exposure",
         "tail_logs",
+        "add_service",
+        "remove_service",
+        "add_route",
+        "remove_route",
     }
 )
 
 
 def test_all_required_tools_are_defined() -> None:
-    """All 11 tools from cli-reference.md have a dispatch arm."""
+    """All 15 tools from cli-reference.md have a dispatch arm."""
     src = inspect.getsource(mcp_srv)
     for tool in _REQUIRED_TOOLS:
         assert f'case "{tool}"' in src, f"missing dispatch arm for {tool}"
