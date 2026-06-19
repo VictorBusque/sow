@@ -1,6 +1,6 @@
 [project]
 name = "sow-cli"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A deterministic deployment engine that turns a YAML file into git-sourced systemd user services behind a user-level NGINX, exposed through Cloudflare Tunnel."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -26,11 +26,19 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sow"]
+
+# Version is derived from git tags (setuptools-scm via hatch-vcs).
+# The git tag vX.Y.Z is the single source of truth; never edit a version by hand.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+fallback_version = "0.0.0"
 
 # ---- ruff: formatter + linter -----------------------------------------------
 [tool.ruff]

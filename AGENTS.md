@@ -85,6 +85,22 @@ These come straight from the docs and apply to all system-mutating code.
 - Config (user-owned, editable): `~/.config/sow/sow.yaml`
 - Runtime (sow-owned, do not hand-edit): `~/.local/share/sow/` — `repos/`, `data/`, `generated/{nginx,cloudflared,systemd}/`, `state.json`
 
+## Releases
+
+Versioning is **SCM-derived**: the package version is never edited by hand. It is computed from git tags at build time via `hatch-vcs` (see `[tool.hatch.version]` in `pyproject.toml`). The runtime `sow.__version__` is read back from installed package metadata (`importlib.metadata.version("sow-cli")`).
+
+To cut a release:
+
+1. Make sure the commit you want shipped is on `main` and CI is green.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z` — that tag push is the only thing that triggers `publish`.
+
+Rules:
+
+- **The git tag is the single source of truth.** Never hand-edit a version string; the build derives it from the tag, and a CI gate asserts the tag matches the built wheel/sdist version before publishing.
+- **PyPI files are immutable.** A tag must never be reused or moved — re-publishing the same version is impossible. A bad release is fixed by shipping a new patch version.
+- **No dev/dirty artifacts on tags.** Tag an exact, clean commit; the gate rejects versions with a `.dev` or local (`+`) suffix so an unclean tree can't slip through.
+- Tags must be valid PEP 440: `vMAJOR.MINOR.PATCH`, optionally with a pre-release suffix (e.g. `-rc1`).
+
 ## Commit rules
 
 Every commit must pass these checks before push:
