@@ -7,7 +7,7 @@
 # Installs missing system dependencies where possible (requires sudo for
 # packages). Privilege escalation is requested only when needed.
 # sow itself runs rootless — only the one-time dep install may use sudo.
-set -eo pipefail
+set -e
 
 # ── style ─────────────────────────────────────────────────────────────────
 BOLD=$(printf '\033[1m')
@@ -129,8 +129,10 @@ get_cloudflared() {
     case "$PKG_MANAGER" in
         apt)
             sudo_cmd mkdir -p /usr/share/keyrings
-            curl -fsSL https://pkg.cloudflare.com/cloudflared.gpg | sudo_cmd tee /usr/share/keyrings/cloudflared.gpg >/dev/null
-            echo "deb [signed-by=/usr/share/keyrings/cloudflared.gpg] https://pkg.cloudflare.com/cloudflared any main" | sudo_cmd tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
+            curl -fsSLo /tmp/cloudflared.gpg https://pkg.cloudflare.com/cloudflared.gpg
+            sudo_cmd cp /tmp/cloudflared.gpg /usr/share/keyrings/cloudflared.gpg
+            echo "deb [signed-by=/usr/share/keyrings/cloudflared.gpg] https://pkg.cloudflare.com/cloudflared any main" > /tmp/cloudflared.list
+            sudo_cmd cp /tmp/cloudflared.list /etc/apt/sources.list.d/cloudflared.list
             sudo_cmd apt-get update -qq
             sudo_cmd apt-get install -y cloudflared
             ;;
