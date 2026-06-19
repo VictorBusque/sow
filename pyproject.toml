@@ -1,5 +1,5 @@
 [project]
-name = "sow"
+name = "sow-cli"
 version = "0.1.0"
 description = "A deterministic deployment engine that turns a YAML file into git-sourced systemd user services behind a user-level NGINX, exposed through Cloudflare Tunnel."
 readme = "README.md"
