@@ -78,7 +78,7 @@ These are the details the specs left to implementation. Pinning them now prevent
 
 Effort labels are rough (S/M/L). Each phase lists tasks, its dependency, and a definition of done (DoD).
 
-> **Status:** Phases 0–5 are complete (`ruff`/`ty`/`pytest` green; 172 tests). **Next up: Phase 6 — Update**, which wires `fetch` → `resolve_ref` → write ref/sha into config → `apply`. The seams it depends on are all in place: `engine/apply.py`, the `write_source_fields` helper, `config_mod.load`/`digest`, the `sysdeps` wrappers.
+> **Status:** Phases 0–6 are complete (`ruff`/`ty`/`pytest` green; 177 tests). **Next up: Phase 7 — CLI**, which wraps the engine commands in Typer with global `--config`/`--json` flags per `rfc.md` §19. The seams it depends on are all in place: `engine/apply`, `engine/update`, `engine/stage`, `config.load`/`digest`, and all `sysdeps` wrappers.
 
 ### Phase 0 — Scaffolding (S) — ✅ DONE
 - `pyproject.toml`: `uv`, `requires-python >=3.12`, runtime deps (`typer`, `pydantic>=2`, `jinja2`, `mcp`), dev deps (`ruff`, `ty`, `pytest`).
