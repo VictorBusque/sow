@@ -78,9 +78,7 @@ These are the details the specs left to implementation. Pinning them now prevent
 
 Effort labels are rough (S/M/L). Each phase lists tasks, its dependency, and a definition of done (DoD).
 
-> **Status:** Phases 0–9 are complete (`ruff`/`ty`/`pytest` green; 192 tests). **Next up: Phase 10 — Hardening & polish**, which ties up loose ends: bounded logs and scrubbed env everywhere, error messages with remediation hints, an end-to-end integration test (apply → update → rollback), CLI help text synced with ``cli-reference.md``, and the README quickstart.
-
-
+> **Status:** All phases 0–10 are complete (`ruff`/`ty`/`pytest` green; 193 tests). The walking skeleton is ready: CLI with 14 commands, MCP server with 11 tools, the full apply pipeline with rollback, update, init, an end-to-end integration test, and a README quickstart.
 ### Phase 0 — Scaffolding (S) — ✅ DONE
 - `pyproject.toml`: `uv`, `requires-python >=3.12`, runtime deps (`typer`, `pydantic>=2`, `jinja2`, `mcp`), dev deps (`ruff`, `ty`, `pytest`).
 - Package skeleton: `outpost/{cli,mcp,engine,models,sysdeps,templates,state}/__init__.py`; `tests/{unit,integration,mocks}/__init__.py`.

@@ -38,11 +38,10 @@ There is a massive gap between raw self-hosting primitives and heavy orchestrati
 Install the Outpost CLI (requires `uv`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/outpost-platform/outpost/main/install.sh | sh
-
+curl -fsSL https://raw.githubusercontent.com/VictorBusque/outpost/main/install.sh | sh
 ```
 
-*Note: The installer may prompt for `sudo` strictly to install missing system packages (`nginx`, `cloudflared`, `git`), but Outpost itself runs entirely in user-space.*
+*Note: Outpost runs entirely in user-space. Ensure `git`, `nginx`, and `cloudflared` are pre-installed.*
 
 ### 2. Initialization
 
@@ -150,10 +149,9 @@ We welcome contributions! Outpost is built on the [Astral stack](https://astral.
 2. **Clone & Sync:**
 
 ```bash
-git clone https://github.com/outpost-platform/outpost.git
+git clone https://github.com/VictorBusque/outpost.git
 cd outpost
 uv sync
-
 ```
 
 ### Engineering Standards

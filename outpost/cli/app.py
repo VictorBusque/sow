@@ -137,6 +137,7 @@ def apply(
             typer.echo(result.message)
         raise typer.Exit(code=_EXIT_OK)
     typer.echo(f"apply failed: {result.message}", err=True)
+    typer.echo("hint: run `outpost logs <service>` or check the error above", err=True)
     raise typer.Exit(code=_EXIT_OPERATIONAL)
 
 
@@ -172,6 +173,7 @@ def update(
             typer.echo(f"{service} updated and applied")
         raise typer.Exit(code=_EXIT_OK)
     typer.echo(f"update failed: {result.message}", err=True)
+    typer.echo("hint: check git credentials and network access", err=True)
     raise typer.Exit(code=_EXIT_OPERATIONAL)
 
 
@@ -398,6 +400,7 @@ def _config_error(exc: outpost_config.ConfigError) -> None:
     typer.echo(f"invalid config: {exc}", err=True)
     for line in exc.errors:
         typer.echo(f"  - {line}", err=True)
+    typer.echo("hint: edit ~/.config/outpost/outpost.yaml and re-run", err=True)
     raise typer.Exit(code=_EXIT_INVALID_CONFIG) from exc
 
 
@@ -407,6 +410,7 @@ def _run_syscmd(label: str, fn: Callable[[], None]) -> None:
         fn()
     except (SubprocessError, OSError) as exc:
         typer.echo(f"{label} failed: {exc}", err=True)
+        typer.echo("hint: check `systemctl --user status` or `journalctl --user -xe`", err=True)
         raise typer.Exit(code=_EXIT_OPERATIONAL) from exc
 
 
