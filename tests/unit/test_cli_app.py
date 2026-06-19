@@ -11,6 +11,7 @@ Command set must match ``rfc.md`` §19 exactly (14 commands).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -95,7 +96,9 @@ def test_update_without_service_prints_help(tmp_path: Path) -> None:
 def test_logs_default_lines(tmp_path: Path) -> None:
     result = runner.invoke(app, ["logs", "--help"])
     assert result.exit_code == 0
-    assert "--lines" in result.stdout
+    # ponytail: rich ANSI codes on CI, strip them
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert "--lines" in plain
 
 
 def test_start_stop_restart_help(tmp_path: Path) -> None:
