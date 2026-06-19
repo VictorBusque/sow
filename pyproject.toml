@@ -13,6 +13,41 @@ dependencies = [
     "mcp>=1.2",
     "pyyaml>=6.0.3",
 ]
+keywords = [
+    "deployment",
+    "systemd",
+    "nginx",
+    "cloudflare",
+    "cloudflare-tunnel",
+    "mcp",
+    "self-hosting",
+    "infrastructure",
+    "cli",
+    "reverse-proxy",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Installation/Setup",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/VictorBusque/sow"
+Documentation = "https://github.com/VictorBusque/sow/tree/main/docs/v1"
+Repository = "https://github.com/VictorBusque/sow"
+Issues = "https://github.com/VictorBusque/sow/issues"
+Changelog = "https://github.com/VictorBusque/sow/releases"
 
 [project.scripts]
 sow = "sow.cli.app:app"

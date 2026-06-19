@@ -130,13 +130,13 @@ sow's CLI is the authoritative interface for your infrastructure.
 
 | Doc | What it covers |
 | --- | --- |
-| [docs/v1/prd.md](docs/v1/prd.md) | Product requirements: the four primitives, apply pipeline, ports, health, source/update semantics. |
-| [docs/v1/rfc.md](docs/v1/rfc.md) | Technical spec: install/init, directory layout, execution & state model, security. |
-| [docs/v1/stack.md](docs/v1/stack.md) | Language, libraries, codebase layout, engineering conventions. |
-| [docs/v1/config-schema.md](docs/v1/config-schema.md) | Canonical `sow.yaml` field schema (types, defaults, validation rules). |
-| [docs/v1/cli-reference.md](docs/v1/cli-reference.md) | Full CLI + MCP tool contracts (flags, exit codes, I/O schemas). |
-| [docs/v1/examples/full-stack.yaml](docs/v1/examples/full-stack.yaml) | Exhaustive, realistic example config. |
-| [docs/v1/implementation-plan.md](docs/v1/implementation-plan.md) | v1 build roadmap: phased tasks, technical decisions, testing, risks. |
+| [docs/v1/prd.md](https://github.com/VictorBusque/sow/blob/main/docs/v1/prd.md) | Product requirements: the four primitives, apply pipeline, ports, health, source/update semantics. |
+| [docs/v1/rfc.md](https://github.com/VictorBusque/sow/blob/main/docs/v1/rfc.md) | Technical spec: install/init, directory layout, execution & state model, security. |
+| [docs/v1/stack.md](https://github.com/VictorBusque/sow/blob/main/docs/v1/stack.md) | Language, libraries, codebase layout, engineering conventions. |
+| [docs/v1/config-schema.md](https://github.com/VictorBusque/sow/blob/main/docs/v1/config-schema.md) | Canonical `sow.yaml` field schema (types, defaults, validation rules). |
+| [docs/v1/cli-reference.md](https://github.com/VictorBusque/sow/blob/main/docs/v1/cli-reference.md) | Full CLI + MCP tool contracts (flags, exit codes, I/O schemas). |
+| [docs/v1/examples/full-stack.yaml](https://github.com/VictorBusque/sow/blob/main/docs/v1/examples/full-stack.yaml) | Exhaustive, realistic example config. |
+| [docs/v1/implementation-plan.md](https://github.com/VictorBusque/sow/blob/main/docs/v1/implementation-plan.md) | v1 build roadmap: phased tasks, technical decisions, testing, risks. |
 
 ---
 
